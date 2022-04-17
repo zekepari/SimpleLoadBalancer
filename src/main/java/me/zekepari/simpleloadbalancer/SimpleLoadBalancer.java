@@ -50,6 +50,9 @@ public class SimpleLoadBalancer {
 
     @Subscribe
     private void onKickFromServer(KickedFromServerEvent event) {
+        if (event.kickedDuringServerConnect()) {
+            return;
+        }
         Optional<RegisteredServer> optionalServer = proxyServer.getAllServers().stream().filter(server -> server != event.getServer()).min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
         optionalServer.ifPresent(server -> event.setResult(KickedFromServerEvent.RedirectPlayer.create(server)));
         updateAllServers();
