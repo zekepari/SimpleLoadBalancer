@@ -27,7 +27,7 @@ public class SimpleLoadBalancer {
     private final ProxyServer proxyServer;
     private final Logger logger;
 
-    private final List<RegisteredServer> tryServers = new ArrayList<>();
+    private final List<RegisteredServer> servers = new ArrayList<>();
 
     @Inject
     private SimpleLoadBalancer(ProxyServer server, Logger logger) {
@@ -37,13 +37,13 @@ public class SimpleLoadBalancer {
 
     @Subscribe
     private void onProxyInitialization(ProxyInitializeEvent event) {
-        tryServers.addAll(proxyServer.getAllServers());
+        servers.addAll(proxyServer.getAllServers());
         updateAllServers();
     }
 
     @Subscribe
     private void onServerPreConnection(ServerPreConnectEvent event) {
-        Optional<RegisteredServer> optionalServer = proxyServer.getAllServers().stream().min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
+        Optional<RegisteredServer> optionalServer = servers.stream().min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
         optionalServer.ifPresent(server -> event.setResult(ServerPreConnectEvent.ServerResult.allowed(server)));
         updateAllServers();
     }
@@ -53,15 +53,17 @@ public class SimpleLoadBalancer {
         if (event.kickedDuringServerConnect()) {
             return;
         }
-        Optional<RegisteredServer> optionalServer = proxyServer.getAllServers().stream().filter(server -> server != event.getServer()).min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
+        Optional<RegisteredServer> optionalServer = servers.stream().filter(server -> server != event.getServer()).min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
         optionalServer.ifPresent(server -> event.setResult(KickedFromServerEvent.RedirectPlayer.create(server)));
         updateAllServers();
     }
 
     private void updateAllServers() {
-        for (RegisteredServer server : tryServers) {
-            server.ping().thenAccept(serverPing -> proxyServer.registerServer(server.getServerInfo())).exceptionally(result -> {
-                proxyServer.unregisterServer(server.getServerInfo());
+        for (RegisteredServer server : proxyServer.getAllServers()) {
+            server.ping().thenAccept(serverPing -> {
+                servers.add(server);
+            }).exceptionally(result -> {
+                servers.remove(server);
                 return null;
             });
         }
