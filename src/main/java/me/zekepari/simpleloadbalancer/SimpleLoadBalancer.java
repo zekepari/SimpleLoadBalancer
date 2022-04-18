@@ -2,18 +2,18 @@ package me.zekepari.simpleloadbalancer;
 
 import com.google.inject.Inject;
 import com.velocitypowered.api.event.Subscribe;
-import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import org.slf4j.Logger;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "simpleloadbalancer",
@@ -25,13 +25,14 @@ import java.util.Optional;
 public class SimpleLoadBalancer {
 
     private final ProxyServer proxyServer;
+    private final Logger logger;
 
-    private final List<RegisteredServer> servers = new ArrayList<>();
-    static int counter = 0;
+    private final HashMap<RegisteredServer, Integer> servers = new HashMap<>();
 
     @Inject
-    private SimpleLoadBalancer(ProxyServer server) {
+    private SimpleLoadBalancer(ProxyServer server, Logger logger) {
         this.proxyServer = server;
+        this.logger = logger;
     }
 
     @Subscribe
@@ -41,50 +42,53 @@ public class SimpleLoadBalancer {
 
     @Subscribe
     private void onServerPreConnection(ServerPreConnectEvent event) {
-        int highestCount = 0;
-        int serverNumber = 0;
+        event.setResult(ServerPreConnectEvent.ServerResult.allowed(getLowestServer(null)));
+    }
 
-        for (RegisteredServer server : servers) {
-            if (server.getPlayersConnected().size() > highestCount) {
-                highestCount = server.getPlayersConnected().size();
-            }
-            serverNumber++;
-        }
-
-        int serverChoice = counter % servers.size();
-
-        if (serverChoice == serverNumber) {
-            serverChoice++;
-            serverChoice %= servers.size();
-        }
-
-        counter++;
-
-        RegisteredServer selectedServer = servers.get(serverChoice);
-        event.setResult(ServerPreConnectEvent.ServerResult.allowed(selectedServer));
+    @Subscribe
+    private void onServerConnection(ServerConnectedEvent event) {
+        servers.replace(event.getServer(), servers.get(event.getServer()) + 1);
     }
 
     @Subscribe
     private void onKickFromServer(KickedFromServerEvent event) {
+        servers.replace(event.getServer(), servers.get(event.getServer()) - 1);
         if (event.kickedDuringServerConnect()) {
             return;
         }
-        Optional<RegisteredServer> optionalServer = servers.stream().filter(server -> server != event.getServer()).min(Comparator.comparingInt(server -> server.getPlayersConnected().size()));
-        optionalServer.ifPresent(server -> event.setResult(KickedFromServerEvent.RedirectPlayer.create(server)));
-        updateAllServers();
+        event.setResult(KickedFromServerEvent.RedirectPlayer.create(getLowestServer(event.getServer())));
     }
 
-    @Subscribe
-    private void onDisconnection(DisconnectEvent event) {
-        updateAllServers();
+    private RegisteredServer getLowestServer(RegisteredServer server) {
+        Map.Entry<RegisteredServer, Integer> min = null;
+        for (Map.Entry<RegisteredServer, Integer> entry : servers.entrySet()) {
+            if (min == null || min.getValue() > entry.getValue() && entry.getKey() != server) {
+                min = entry;
+            }
+        }
+        assert min != null;
+        return min.getKey();
     }
 
     private void updateAllServers() {
-        for (RegisteredServer server : proxyServer.getAllServers()) {
-            server.ping().thenAccept(serverPing -> servers.add(server)).exceptionally(result -> {
-                servers.remove(server);
-                return null;
-            });
-        }
+        proxyServer.getScheduler()
+                .buildTask(this, () -> {
+                    for (RegisteredServer server : proxyServer.getAllServers()) {
+                        server.ping().thenAccept(serverPing -> {
+                            if (!servers.containsKey(server)) {
+                                servers.put(server, server.getPlayersConnected().size());
+                                logger.info("Added " + server.getServerInfo().getName() + " to servers list.");
+                            }
+                        }).exceptionally(result -> {
+                            if (servers.containsKey(server)) {
+                                servers.remove(server);
+                                logger.info("Removed " + server.getServerInfo().getName() + " from servers list.");
+                            }
+                            return null;
+                        });
+                    }
+                })
+                .repeat(5L, TimeUnit.SECONDS)
+                .schedule();
     }
 }
