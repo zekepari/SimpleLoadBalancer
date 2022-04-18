@@ -1,5 +1,5 @@
 # SimpleLoadBalancer
-SimpleLoadBalancer calculates the least occupied server every 400ms instead of connection/disconnection events.
+SimpleLoadBalancer calculates the least occupied server every 400ms instead of on connection/disconnection events.
 
 Unlike other load balancers, SimpleLoadBalancer detects when a server is offline and will not send players to it.
 ## Drawbacks
